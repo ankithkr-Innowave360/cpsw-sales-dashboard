@@ -5,37 +5,45 @@ import streamlit as st
 
 from common import (
     BLUE,
-    DATA_FILE,
     OVERVIEW_ALL_FILTERS,
     OVERVIEW_FILTER_GROUPS,
     OVERVIEW_HEADLINE,
     OVERVIEW_MEASURES,
     RED,
-    SHEET_NAME,
     build_sidebar_filters,
-    format_inr,
     inject_global_css,
     load_data,
+    make_top_n_customer_widget,
     money_item,
-    render_kpi_grid,
+    rank_gradient,
+    render_header,
+    render_html_table,
+    render_kpi_rows,
     style_fig,
 )
 
 inject_global_css()
 df = load_data()
 
-st.title("CPSW Sales Dashboard — Overview")
-st.caption(f"Source: {DATA_FILE.name} | Sheet: {SHEET_NAME} | {len(df):,} transaction lines | highlighted columns only")
+render_header("CPSW Dashboard")
+
+top10_widget, TOP10_KEY = make_top_n_customer_widget(
+    df, OVERVIEW_ALL_FILTERS, key_prefix="ov", value_col="BASIC VALUE", value_label="Basic Value"
+)
 
 filtered, all_filters, current_selection = build_sidebar_filters(
-    df, OVERVIEW_FILTER_GROUPS, key_prefix="ov"
+    df, OVERVIEW_FILTER_GROUPS, key_prefix="ov", extra_widgets={"Customer": top10_widget}
 )
+
+top10_selection = st.session_state.get(TOP10_KEY, [])
+if top10_selection:
+    filtered = filtered[filtered["SOLD TO PARTY NAME"].isin(top10_selection)]
 
 if filtered.empty:
     st.warning("No rows match the current filters.")
     st.stop()
 
-# --- KPI cards ---
+# --- KPI cards: P&L waterfall (MRP -> Gross Sales -> Net Sales -> Gross Profit -> Net Realised) ---
 
 headline_col = OVERVIEW_MEASURES[OVERVIEW_HEADLINE]
 
@@ -46,36 +54,70 @@ weighted_disc = (
     else 0
 )
 
-# Gross/Net Value: COGS = Billing Quantity x Average cost (per-material weighted average cost,
-# joined by Material Code; unmatched materials contribute COGS = 0)
-basic_sum = filtered["BASIC VALUE"].sum()
-taxable_sum = filtered["TAXABLE VALUE"].sum()
+# Gross Sales = Basic Value (MRP net of Trade Discount)
+gross_sales = filtered["BASIC VALUE"].sum()
+volume_disc = filtered["QUANTITY VALUE DISC"].sum()
+cash_disc = filtered["CASH DISCOUNT"].sum()
+
+# Net Sales = Gross Sales - Volume Discount - Cash Discount
+# (no separate "TO discount" column exists in this data — per business call, treated as already
+# captured in Trade Discount, not a distinct deduction)
+net_sales = gross_sales + volume_disc + cash_disc
+
+# COGS = Billing Quantity x Average cost (per-material weighted average cost, joined by Material
+# Code; unmatched materials contribute COGS = 0)
 cogs_sum = filtered["COGS"].sum()
+gross_profit = net_sales - cogs_sum
+gross_profit_pct = (gross_profit / net_sales * 100) if net_sales else 0
 
-gross_value = basic_sum - cogs_sum
-gross_pct = (gross_value / basic_sum * 100) if basic_sum else 0
+handling = filtered["HANDLING CHARGE"].sum()
+freight = filtered["FREIGHT CHARGE"].sum()
+net_realised = gross_profit - handling - freight
+net_realised_pct = (net_realised / net_sales * 100) if net_sales else 0
 
-net_value = taxable_sum - cogs_sum
-net_pct = (net_value / taxable_sum * 100) if taxable_sum else 0
+unique_skus = filtered["MATERIAL CODE"].nunique()
 
-kpi_items = [
-    money_item(OVERVIEW_HEADLINE, filtered[headline_col].sum(), headline=True),
-    money_item("Gross Value", gross_value),
-    {"label": "Gross %", "value": f"{gross_pct:,.1f}%", "negative": gross_pct < 0},
-    money_item("Net Value", net_value),
-    {"label": "Net %", "value": f"{net_pct:,.1f}%", "negative": net_pct < 0},
-    money_item("Taxable Value", filtered[OVERVIEW_MEASURES["Taxable Value"]].sum()),
-    money_item("Value Before Cash Discount", filtered[OVERVIEW_MEASURES["Value Before Cash Discount"]].sum()),
-    money_item("MRP Total", filtered[OVERVIEW_MEASURES["MRP Total"]].sum()),
-    money_item("Cash Discount", filtered[OVERVIEW_MEASURES["Cash Discount"]].sum()),
-    money_item("Freight Charge", filtered[OVERVIEW_MEASURES["Freight Charge"]].sum()),
-    money_item("Handling Charge", filtered[OVERVIEW_MEASURES["Handling Charge"]].sum()),
-    money_item("Quantity Value Discount", filtered[OVERVIEW_MEASURES["Quantity Value Discount"]].sum()),
-    {"label": "Billing Quantity", "value": f"{filtered[OVERVIEW_MEASURES['Billing Quantity']].sum():,.0f}", "negative": False},
-    {"label": "Transaction Lines", "value": f"{len(filtered):,}", "negative": False},
-    {"label": "Trade Discount % (value-weighted)", "value": f"{weighted_disc * 100:,.1f}%", "negative": weighted_disc < 0},
+
+def _margin_flags(pct: float) -> dict:
+    """Traffic-light tiers for a margin %: healthy above 25%, worth watching 10-25%, thin below 10%."""
+    if pct < 10:
+        return {"negative": True, "category": "charge"}
+    if pct < 25:
+        return {"warning": True, "category": "warning"}
+    return {"positive": True, "category": "margin"}
+
+
+gross_profit_flags = _margin_flags(gross_profit_pct)
+net_realised_flags = _margin_flags(net_realised_pct)
+
+kpi_rows = [
+    [
+        money_item("MRP Total", mrp_sum),
+        {"label": "Trade Discount %", "value": f"{weighted_disc * 100:,.1f}%", "negative": weighted_disc < 0},
+        money_item("Gross Sales", gross_sales),
+        {"label": "Unique SKUs Sold", "value": f"{unique_skus:,}", "negative": False},
+    ],
+    [
+        money_item("Gross Sales", gross_sales),
+        money_item("Volume Discount", volume_disc, category="charge"),
+        money_item("Cash Discount", cash_disc, category="charge"),
+        money_item("Net Sales", net_sales),
+    ],
+    [
+        money_item("Net Sales", net_sales),
+        money_item("COGS", cogs_sum, category="charge"),
+        money_item("Gross Profit", gross_profit, sentiment=True, category="margin"),
+        {"label": "Gross Profit %", "value": f"{gross_profit_pct:,.1f}%", **gross_profit_flags},
+    ],
+    [
+        money_item("Gross Profit", gross_profit, sentiment=True, category="margin"),
+        money_item("Handling Charge", handling, category="charge"),
+        money_item("Freight Charge", freight, category="charge"),
+        money_item("Net Realised Amount", net_realised, sentiment=True, category="margin"),
+        {"label": "NR %", "value": f"{net_realised_pct:,.1f}%", **net_realised_flags},
+    ],
 ]
-render_kpi_grid(kpi_items)
+render_kpi_rows(kpi_rows)
 
 st.divider()
 
@@ -117,7 +159,8 @@ axis_label = f"{measure_label} (₹ Cr)" if is_money else measure_label
 chart_df = summary.head(int(top_n)).sort_values(measure_col).copy()
 if is_money:
     chart_df[measure_col] = chart_df[measure_col] / 1e7
-bar_colors = [RED if v < 0 else BLUE for v in chart_df[measure_col]]
+gradient = list(reversed(rank_gradient(len(chart_df))))  # chart_df is ascending, so lowest gets the lightest shade
+bar_colors = [RED if v < 0 else gradient[i] for i, v in enumerate(chart_df[measure_col])]
 fig_bar = px.bar(chart_df, x=measure_col, y=group_col, orientation="h", text_auto=".2f" if is_money else ".2s")
 fig_bar.update_traces(marker_color=bar_colors)
 style_fig(fig_bar, yaxis_title="", xaxis_title=axis_label, height=max(350, 28 * len(chart_df)))
@@ -133,7 +176,7 @@ for label, col in OVERVIEW_MEASURES.items():
         rename_map[col] = f"{label} (₹ Cr)"
 display_table = cr_table.rename(columns=rename_map)
 
-st.dataframe(display_table, use_container_width=True, hide_index=True)
+render_html_table(display_table)
 st.download_button(
     "Download this table as CSV",
     display_table.to_csv(index=False).encode("utf-8"),

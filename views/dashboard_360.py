@@ -12,15 +12,17 @@ from common import (
     DASH360_FILTER_HELP,
     DASH360_HEADLINE,
     DASH360_MEASURES,
-    DATA_FILE,
     NAVY,
     RED,
-    SHEET_NAME,
     build_sidebar_filters,
     format_inr,
     inject_global_css,
     load_data,
+    make_top_n_customer_widget,
     money_item,
+    rank_gradient,
+    render_header,
+    render_html_table,
     render_kpi_grid,
     style_fig,
 )
@@ -28,12 +30,20 @@ from common import (
 inject_global_css()
 df = load_data()
 
-st.title("360 Sales Dashboard")
-st.caption(f"Source: {DATA_FILE.name} | Sheet: {SHEET_NAME} | {len(df):,} transaction lines | full column set")
+render_header("CPSW Dashboard")
+
+top10_widget, TOP10_KEY = make_top_n_customer_widget(
+    df, DASH360_ALL_FILTERS, key_prefix="d360", value_col="INVOICE VALUE", value_label="Net Sales"
+)
 
 filtered, all_filters, current_selection = build_sidebar_filters(
-    df, DASH360_FILTER_GROUPS, key_prefix="d360", help_text=DASH360_FILTER_HELP
+    df, DASH360_FILTER_GROUPS, key_prefix="d360", help_text=DASH360_FILTER_HELP,
+    extra_widgets={"Customer": top10_widget},
 )
+
+top10_selection = st.session_state.get(TOP10_KEY, [])
+if top10_selection:
+    filtered = filtered[filtered["SOLD TO PARTY NAME"].isin(top10_selection)]
 
 if filtered.empty:
     st.warning("No rows match the current filters.")
@@ -67,6 +77,24 @@ state_sales = filtered.groupby("STATE DESCRIPTION")["INVOICE VALUE"].sum()
 top_state_name = state_sales.idxmax() if len(state_sales) else "-"
 top_state_share = (state_sales.max() / net_sales * 100) if net_sales and len(state_sales) else 0
 
+# Return Rate %: traffic-light tiers — under 10% is healthy, 10-20% is worth watching, above 20% is a problem
+if return_rate > 20:
+    return_rate_flags = {"negative": True, "category": "charge"}
+elif return_rate >= 10:
+    return_rate_flags = {"warning": True, "category": "warning"}
+else:
+    return_rate_flags = {"positive": True, "category": "margin"}
+
+# MoM Growth %: growing is good, a small dip is a caution, a real decline is bad
+if mom_growth is None:
+    mom_flags = {}
+elif mom_growth < -5:
+    mom_flags = {"negative": True, "category": "charge"}
+elif mom_growth < 0:
+    mom_flags = {"warning": True, "category": "warning"}
+else:
+    mom_flags = {"positive": True, "category": "margin"}
+
 kpi_items = [
     money_item(DASH360_HEADLINE, net_sales, headline=True),
     money_item("Taxable Value", taxable),
@@ -75,12 +103,12 @@ kpi_items = [
     {"label": "Distinct Orders", "value": f"{orders:,}", "negative": False},
     {"label": "Active Customers", "value": f"{customers:,}", "negative": False},
     money_item("Avg Invoice Value", avg_invoice),
-    {"label": "Return Rate %", "value": f"{return_rate:,.1f}%", "negative": return_rate > 0},
+    {"label": "Return Rate %", "value": f"{return_rate:,.1f}%", **return_rate_flags},
     {"label": "Trade Discount % (value-weighted)", "value": f"{weighted_disc * 100:,.1f}%", "negative": weighted_disc < 0},
     {
         "label": "MoM Growth %",
         "value": f"{mom_growth:,.1f}%" if mom_growth is not None else "N/A",
-        "negative": (mom_growth is not None and mom_growth < 0),
+        **mom_flags,
     },
     {"label": f"Top State Share ({top_state_name})", "value": f"{top_state_share:,.1f}%", "negative": False},
 ]
@@ -123,7 +151,8 @@ for col_widget, dim_col, title in [
 ]:
     g = filtered.groupby(dim_col, as_index=False)["INVOICE VALUE"].sum().sort_values("INVOICE VALUE").tail(15)
     g["INVOICE VALUE"] = g["INVOICE VALUE"] / 1e7
-    colors = [RED if v < 0 else BLUE for v in g["INVOICE VALUE"]]
+    gradient = list(reversed(rank_gradient(len(g))))
+    colors = [RED if v < 0 else gradient[i] for i, v in enumerate(g["INVOICE VALUE"])]
     fig = px.bar(g, x="INVOICE VALUE", y=dim_col, orientation="h", text_auto=".2f")
     fig.update_traces(marker_color=colors)
     style_fig(fig, yaxis_title="", xaxis_title="Net Sales (₹ Cr)", height=max(320, 26 * len(g)), title=title)
@@ -142,7 +171,7 @@ top_customers = (
 )
 top_customers["INVOICE VALUE"] = top_customers["INVOICE VALUE"] / 1e7
 fig_cust = px.bar(top_customers, x="INVOICE VALUE", y="SOLD TO PARTY NAME", orientation="h", text_auto=".2f")
-fig_cust.update_traces(marker_color=BLUE)
+fig_cust.update_traces(marker_color=list(reversed(rank_gradient(len(top_customers)))))
 style_fig(fig_cust, yaxis_title="", xaxis_title="Net Sales (₹ Cr)", height=380, title="Top 10 Customers")
 top_c1.plotly_chart(fig_cust, use_container_width=True)
 
@@ -152,7 +181,7 @@ top_materials = (
 )
 top_materials["INVOICE VALUE"] = top_materials["INVOICE VALUE"] / 1e7
 fig_mat = px.bar(top_materials, x="INVOICE VALUE", y="MATERIAL DESCRIPTION", orientation="h", text_auto=".2f")
-fig_mat.update_traces(marker_color=NAVY)
+fig_mat.update_traces(marker_color=list(reversed(rank_gradient(len(top_materials)))))
 style_fig(fig_mat, yaxis_title="", xaxis_title="Net Sales (₹ Cr)", height=380, title="Top 10 Materials")
 top_c2.plotly_chart(fig_mat, use_container_width=True)
 
@@ -162,6 +191,8 @@ st.divider()
 
 st.subheader("Product & Customer Mix")
 mix_c1, mix_c2, mix_c3 = st.columns([1.4, 1, 1])
+
+MIX_CHART_HEIGHT = 460
 
 mg_tree = (
     filtered.groupby(["MATERIAL GROUP DESCRIPTION", "MG1 DESCRIPTION"], as_index=False)["INVOICE VALUE"].sum()
@@ -173,24 +204,29 @@ fig_tree = px.treemap(
     color="MATERIAL GROUP DESCRIPTION", color_discrete_sequence=CHART_SEQUENCE,
 )
 fig_tree.update_traces(texttemplate="%{label}<br>₹%{value:.2f} Cr")
-fig_tree.update_layout(margin=dict(t=30, l=0, r=0, b=0))
-style_fig(fig_tree, title="Sales by Material Group")
+style_fig(fig_tree, title="Sales by Material Group", height=MIX_CHART_HEIGHT, margin=dict(t=50, l=4, r=4, b=4))
 mix_c1.plotly_chart(fig_tree, use_container_width=True)
 
 cg_mix = filtered.groupby("CUSTOMER GROUP DESCRIPTION", as_index=False)["INVOICE VALUE"].sum()
 cg_mix = cg_mix[cg_mix["INVOICE VALUE"] > 0]
 cg_mix["INVOICE VALUE"] = cg_mix["INVOICE VALUE"] / 1e7
 fig_cg = px.pie(cg_mix, names="CUSTOMER GROUP DESCRIPTION", values="INVOICE VALUE", hole=0.55, color_discrete_sequence=CHART_SEQUENCE)
-fig_cg.update_traces(hovertemplate="%{label}<br>₹%{value:.2f} Cr<br>%{percent}")
-style_fig(fig_cg, title="Customer Group Mix", margin=dict(t=30, l=0, r=0, b=0))
+fig_cg.update_traces(hovertemplate="%{label}<br>₹%{value:.2f} Cr<br>%{percent}", textposition="inside")
+style_fig(
+    fig_cg, title="Customer Group Mix", height=MIX_CHART_HEIGHT, margin=dict(t=50, l=20, r=20, b=20),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
+)
 mix_c2.plotly_chart(fig_cg, use_container_width=True)
 
 mkt_mix = filtered.groupby("Market", as_index=False)["INVOICE VALUE"].sum()
 mkt_mix = mkt_mix[mkt_mix["INVOICE VALUE"] > 0]
 mkt_mix["INVOICE VALUE"] = mkt_mix["INVOICE VALUE"] / 1e7
 fig_mkt = px.pie(mkt_mix, names="Market", values="INVOICE VALUE", hole=0.55, color_discrete_sequence=CHART_SEQUENCE)
-fig_mkt.update_traces(hovertemplate="%{label}<br>₹%{value:.2f} Cr<br>%{percent}")
-style_fig(fig_mkt, title="Market Mix (Developed / Developing)", margin=dict(t=30, l=0, r=0, b=0))
+fig_mkt.update_traces(hovertemplate="%{label}<br>₹%{value:.2f} Cr<br>%{percent}", textposition="inside")
+style_fig(
+    fig_mkt, title="Market Mix (Developed / Developing)", height=MIX_CHART_HEIGHT, margin=dict(t=50, l=20, r=20, b=20),
+    legend=dict(orientation="h", yanchor="bottom", y=-0.15, xanchor="center", x=0.5),
+)
 mix_c3.plotly_chart(fig_mkt, use_container_width=True)
 
 st.divider()
@@ -274,7 +310,7 @@ with tab_cust:
     cust_summary["Net Sales"] = (cust_summary["Net Sales"] / 1e7).round(4)
     cust_summary["Taxable Value"] = (cust_summary["Taxable Value"] / 1e7).round(4)
     cust_summary = cust_summary.rename(columns={"Net Sales": "Net Sales (₹ Cr)", "Taxable Value": "Taxable Value (₹ Cr)"})
-    st.dataframe(cust_summary, use_container_width=True, hide_index=True)
+    render_html_table(cust_summary)
     st.download_button(
         "Download customer summary as CSV", cust_summary.to_csv(index=False).encode("utf-8"),
         file_name="customer_summary.csv", mime="text/csv", key="dl_cust",
@@ -293,7 +329,7 @@ with tab_geo:
     geo_summary["Net Sales"] = (geo_summary["Net Sales"] / 1e7).round(4)
     geo_summary["Taxable Value"] = (geo_summary["Taxable Value"] / 1e7).round(4)
     geo_summary = geo_summary.rename(columns={"Net Sales": "Net Sales (₹ Cr)", "Taxable Value": "Taxable Value (₹ Cr)"})
-    st.dataframe(geo_summary, use_container_width=True, hide_index=True)
+    render_html_table(geo_summary)
     st.download_button(
         "Download branch/state summary as CSV", geo_summary.to_csv(index=False).encode("utf-8"),
         file_name="branch_state_summary.csv", mime="text/csv", key="dl_geo",
@@ -314,7 +350,7 @@ with tab_mat:
     mat_summary["Net Sales"] = (mat_summary["Net Sales"] / 1e7).round(4)
     mat_summary["MRP Total"] = (mat_summary["MRP Total"] / 1e7).round(4)
     mat_summary = mat_summary.rename(columns={"Net Sales": "Net Sales (₹ Cr)", "MRP Total": "MRP Total (₹ Cr)"})
-    st.dataframe(mat_summary, use_container_width=True, hide_index=True)
+    render_html_table(mat_summary, max_height=500)
     st.download_button(
         "Download material summary as CSV", mat_summary.to_csv(index=False).encode("utf-8"),
         file_name="material_summary.csv", mime="text/csv", key="dl_mat",
