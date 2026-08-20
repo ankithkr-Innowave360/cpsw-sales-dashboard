@@ -90,7 +90,7 @@ st.divider()
 
 # --- monthly trend: gross invoices vs returns ---
 
-st.subheader("Monthly Trend — Gross Invoices vs Returns")
+st.subheader("Monthly Trend — Gross Invoices vs Returns (₹ Cr)")
 gross_by_month = (
     filtered[filtered["FLAG"] == "Invoice"].groupby("Month")["INVOICE VALUE"].sum().sort_index()
 )
@@ -102,12 +102,12 @@ month_labels = [m.strftime("%b %Y") for m in all_months]
 
 fig_trend = go.Figure()
 fig_trend.add_bar(
-    x=month_labels, y=[gross_by_month.get(m, 0) for m in all_months], name="Gross Invoices", marker_color=BLUE
+    x=month_labels, y=[gross_by_month.get(m, 0) / 1e7 for m in all_months], name="Gross Invoices", marker_color=BLUE
 )
 fig_trend.add_bar(
-    x=month_labels, y=[returns_by_month.get(m, 0) for m in all_months], name="Returns", marker_color=RED
+    x=month_labels, y=[returns_by_month.get(m, 0) / 1e7 for m in all_months], name="Returns", marker_color=RED
 )
-style_fig(fig_trend, barmode="group", xaxis_title="", yaxis_title="Invoice Value", legend_title_text="")
+style_fig(fig_trend, barmode="group", xaxis_title="", yaxis_title="Invoice Value (₹ Cr)", legend_title_text="")
 st.plotly_chart(fig_trend, use_container_width=True)
 
 st.divider()
@@ -122,10 +122,11 @@ for col_widget, dim_col, title in [
     (geo_c2, "BRANCH DESCRIPTION", "Top Branches"),
 ]:
     g = filtered.groupby(dim_col, as_index=False)["INVOICE VALUE"].sum().sort_values("INVOICE VALUE").tail(15)
+    g["INVOICE VALUE"] = g["INVOICE VALUE"] / 1e7
     colors = [RED if v < 0 else BLUE for v in g["INVOICE VALUE"]]
-    fig = px.bar(g, x="INVOICE VALUE", y=dim_col, orientation="h", text_auto=".2s")
+    fig = px.bar(g, x="INVOICE VALUE", y=dim_col, orientation="h", text_auto=".2f")
     fig.update_traces(marker_color=colors)
-    style_fig(fig, yaxis_title="", xaxis_title="Net Sales", height=max(320, 26 * len(g)), title=title)
+    style_fig(fig, yaxis_title="", xaxis_title="Net Sales (₹ Cr)", height=max(320, 26 * len(g)), title=title)
     col_widget.plotly_chart(fig, use_container_width=True)
 
 st.divider()
@@ -139,18 +140,20 @@ top_customers = (
     filtered.groupby("SOLD TO PARTY NAME", as_index=False)["INVOICE VALUE"].sum()
     .sort_values("INVOICE VALUE").tail(10)
 )
-fig_cust = px.bar(top_customers, x="INVOICE VALUE", y="SOLD TO PARTY NAME", orientation="h", text_auto=".2s")
+top_customers["INVOICE VALUE"] = top_customers["INVOICE VALUE"] / 1e7
+fig_cust = px.bar(top_customers, x="INVOICE VALUE", y="SOLD TO PARTY NAME", orientation="h", text_auto=".2f")
 fig_cust.update_traces(marker_color=BLUE)
-style_fig(fig_cust, yaxis_title="", xaxis_title="Net Sales", height=380, title="Top 10 Customers")
+style_fig(fig_cust, yaxis_title="", xaxis_title="Net Sales (₹ Cr)", height=380, title="Top 10 Customers")
 top_c1.plotly_chart(fig_cust, use_container_width=True)
 
 top_materials = (
     filtered.groupby("MATERIAL DESCRIPTION", as_index=False)["INVOICE VALUE"].sum()
     .sort_values("INVOICE VALUE").tail(10)
 )
-fig_mat = px.bar(top_materials, x="INVOICE VALUE", y="MATERIAL DESCRIPTION", orientation="h", text_auto=".2s")
+top_materials["INVOICE VALUE"] = top_materials["INVOICE VALUE"] / 1e7
+fig_mat = px.bar(top_materials, x="INVOICE VALUE", y="MATERIAL DESCRIPTION", orientation="h", text_auto=".2f")
 fig_mat.update_traces(marker_color=NAVY)
-style_fig(fig_mat, yaxis_title="", xaxis_title="Net Sales", height=380, title="Top 10 Materials")
+style_fig(fig_mat, yaxis_title="", xaxis_title="Net Sales (₹ Cr)", height=380, title="Top 10 Materials")
 top_c2.plotly_chart(fig_mat, use_container_width=True)
 
 st.divider()
@@ -164,23 +167,29 @@ mg_tree = (
     filtered.groupby(["MATERIAL GROUP DESCRIPTION", "MG1 DESCRIPTION"], as_index=False)["INVOICE VALUE"].sum()
 )
 mg_tree = mg_tree[mg_tree["INVOICE VALUE"] > 0]
+mg_tree["INVOICE VALUE"] = mg_tree["INVOICE VALUE"] / 1e7
 fig_tree = px.treemap(
     mg_tree, path=["MATERIAL GROUP DESCRIPTION", "MG1 DESCRIPTION"], values="INVOICE VALUE",
     color="MATERIAL GROUP DESCRIPTION", color_discrete_sequence=CHART_SEQUENCE,
 )
+fig_tree.update_traces(texttemplate="%{label}<br>₹%{value:.2f} Cr")
 fig_tree.update_layout(margin=dict(t=30, l=0, r=0, b=0))
 style_fig(fig_tree, title="Sales by Material Group")
 mix_c1.plotly_chart(fig_tree, use_container_width=True)
 
 cg_mix = filtered.groupby("CUSTOMER GROUP DESCRIPTION", as_index=False)["INVOICE VALUE"].sum()
 cg_mix = cg_mix[cg_mix["INVOICE VALUE"] > 0]
+cg_mix["INVOICE VALUE"] = cg_mix["INVOICE VALUE"] / 1e7
 fig_cg = px.pie(cg_mix, names="CUSTOMER GROUP DESCRIPTION", values="INVOICE VALUE", hole=0.55, color_discrete_sequence=CHART_SEQUENCE)
+fig_cg.update_traces(hovertemplate="%{label}<br>₹%{value:.2f} Cr<br>%{percent}")
 style_fig(fig_cg, title="Customer Group Mix", margin=dict(t=30, l=0, r=0, b=0))
 mix_c2.plotly_chart(fig_cg, use_container_width=True)
 
 mkt_mix = filtered.groupby("Market", as_index=False)["INVOICE VALUE"].sum()
 mkt_mix = mkt_mix[mkt_mix["INVOICE VALUE"] > 0]
+mkt_mix["INVOICE VALUE"] = mkt_mix["INVOICE VALUE"] / 1e7
 fig_mkt = px.pie(mkt_mix, names="Market", values="INVOICE VALUE", hole=0.55, color_discrete_sequence=CHART_SEQUENCE)
+fig_mkt.update_traces(hovertemplate="%{label}<br>₹%{value:.2f} Cr<br>%{percent}")
 style_fig(fig_mkt, title="Market Mix (Developed / Developing)", margin=dict(t=30, l=0, r=0, b=0))
 mix_c3.plotly_chart(fig_mkt, use_container_width=True)
 
@@ -219,14 +228,15 @@ wf_measure = [
     "relative", "relative", "relative", "total",
     "relative", "relative", "relative", "relative", "total",
 ]
-wf_y = [wf_basic, wf_foc, wf_netfoc, wf_qtypf, wf_b4cd, wf_cd, wf_fr, wf_hc, wf_tax, wf_cgst, wf_sgst, wf_igst, wf_ro, wf_inv]
+wf_y_raw = [wf_basic, wf_foc, wf_netfoc, wf_qtypf, wf_b4cd, wf_cd, wf_fr, wf_hc, wf_tax, wf_cgst, wf_sgst, wf_igst, wf_ro, wf_inv]
+wf_y = [v / 1e7 for v in wf_y_raw]
 
 fig_wf = go.Figure(
     go.Waterfall(
         x=wf_x,
         measure=wf_measure,
         y=wf_y,
-        text=[format_inr(v) for v in wf_y],
+        text=[format_inr(v) for v in wf_y_raw],
         textposition="outside",
         increasing={"marker": {"color": BLUE}},
         decreasing={"marker": {"color": RED}},
@@ -234,7 +244,7 @@ fig_wf = go.Figure(
         connector={"line": {"color": "rgba(4,21,98,0.3)"}},
     )
 )
-style_fig(fig_wf, showlegend=False, margin=dict(t=10))
+style_fig(fig_wf, showlegend=False, margin=dict(t=10), yaxis_title="₹ Cr")
 st.plotly_chart(fig_wf, use_container_width=True)
 
 st.divider()
@@ -261,6 +271,9 @@ with tab_cust:
         filtered.groupby("SOLD TO PARTY NAME").apply(weighted_discount, include_groups=False).values * 100
     )
     cust_summary = cust_summary.sort_values("Net Sales", ascending=False)
+    cust_summary["Net Sales"] = (cust_summary["Net Sales"] / 1e7).round(4)
+    cust_summary["Taxable Value"] = (cust_summary["Taxable Value"] / 1e7).round(4)
+    cust_summary = cust_summary.rename(columns={"Net Sales": "Net Sales (₹ Cr)", "Taxable Value": "Taxable Value (₹ Cr)"})
     st.dataframe(cust_summary, use_container_width=True, hide_index=True)
     st.download_button(
         "Download customer summary as CSV", cust_summary.to_csv(index=False).encode("utf-8"),
@@ -277,6 +290,9 @@ with tab_geo:
             "Orders": ("SALES ORDER NO", "nunique"),
         }
     ).reset_index().sort_values("Net Sales", ascending=False)
+    geo_summary["Net Sales"] = (geo_summary["Net Sales"] / 1e7).round(4)
+    geo_summary["Taxable Value"] = (geo_summary["Taxable Value"] / 1e7).round(4)
+    geo_summary = geo_summary.rename(columns={"Net Sales": "Net Sales (₹ Cr)", "Taxable Value": "Taxable Value (₹ Cr)"})
     st.dataframe(geo_summary, use_container_width=True, hide_index=True)
     st.download_button(
         "Download branch/state summary as CSV", geo_summary.to_csv(index=False).encode("utf-8"),
@@ -295,6 +311,9 @@ with tab_mat:
         filtered.groupby("MATERIAL DESCRIPTION").apply(weighted_discount, include_groups=False).values * 100
     )
     mat_summary = mat_summary.sort_values("Net Sales", ascending=False)
+    mat_summary["Net Sales"] = (mat_summary["Net Sales"] / 1e7).round(4)
+    mat_summary["MRP Total"] = (mat_summary["MRP Total"] / 1e7).round(4)
+    mat_summary = mat_summary.rename(columns={"Net Sales": "Net Sales (₹ Cr)", "MRP Total": "MRP Total (₹ Cr)"})
     st.dataframe(mat_summary, use_container_width=True, hide_index=True)
     st.download_button(
         "Download material summary as CSV", mat_summary.to_csv(index=False).encode("utf-8"),
@@ -307,7 +326,12 @@ with tab_raw:
         "MATERIAL DESCRIPTION", "MATERIAL GROUP DESCRIPTION", "BILLING QUANTITY",
         "BASIC VALUE", "TAXABLE VALUE", "INVOICE VALUE",
     ]
-    raw_view = filtered[raw_cols].sort_values("Month")
+    raw_view = filtered[raw_cols].sort_values("Month").copy()
+    for money_col in ["BASIC VALUE", "TAXABLE VALUE", "INVOICE VALUE"]:
+        raw_view[money_col] = (raw_view[money_col] / 1e7).round(4)
+    raw_view = raw_view.rename(columns={
+        "BASIC VALUE": "BASIC VALUE (₹ Cr)", "TAXABLE VALUE": "TAXABLE VALUE (₹ Cr)", "INVOICE VALUE": "INVOICE VALUE (₹ Cr)",
+    })
     st.dataframe(raw_view, use_container_width=True, hide_index=True)
     st.download_button(
         "Download filtered raw data as CSV", raw_view.to_csv(index=False).encode("utf-8"),

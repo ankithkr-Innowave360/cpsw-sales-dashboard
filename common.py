@@ -5,8 +5,9 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-DATA_FILE = Path(__file__).parent / "Ankith - Sales.xlsx"
+DATA_FILE = Path(__file__).parent / "Ankith - Sales - Copy.xlsx"
 SHEET_NAME = "Base - DS"
+COST_SHEET_NAME = "Weighted average cost"
 
 # ---- brand palette ----------------------------------------------------------
 
@@ -122,7 +123,7 @@ FULL_COLUMNS = [
     "CITY DESCRIPTION", "BRANCH DESCRIPTION", "STATE DESCRIPTION",
     "CUSTOMER GROUP DESCRIPTION", "CG1 DESCRIPTION", "DISTRIBUTION CHANNEL DESCRIPTION",
     "Customer Type", "Market",
-    "MATERIAL DESCRIPTION", "MATERIAL GROUP DESCRIPTION",
+    "MATERIAL CODE", "MATERIAL DESCRIPTION", "MATERIAL GROUP DESCRIPTION",
     "MG1 DESCRIPTION", "MG2 DESCRIPTION", "MG3 DESCRIPTION", "MG4 DESCRIPTION",
     "BILLING QUANTITY", "MRP TOTAL", "TRADE DISCOUNT %", "TRADE DISCOUNT", "BASIC VALUE",
     "FOC DISCOUNT VALUE", "NET OF FOC", "QUANTITY VALUE DISC", "PIPES AND FITTING DISC",
@@ -164,18 +165,24 @@ def load_data() -> pd.DataFrame:
     trade_disc = trade_disc.where(~is_percent_string, trade_disc / 100)
     df["TRADE DISCOUNT %"] = trade_disc.fillna(0)
 
+    # weighted-average cost per material, for COGS / Gross & Net Value
+    cost = pd.read_excel(DATA_FILE, sheet_name=COST_SHEET_NAME, usecols=["Material code", "Average cost"])
+    cost = cost.dropna(subset=["Material code"]).drop_duplicates(subset=["Material code"], keep="last")
+    df = df.merge(cost, left_on="MATERIAL CODE", right_on="Material code", how="left")
+    df["Average cost"] = pd.to_numeric(df["Average cost"], errors="coerce").fillna(0)
+    # unmatched material codes (no row in the cost sheet) get COGS = 0, per business decision
+    df["COGS"] = df["BILLING QUANTITY"] * df["Average cost"]
+
     return df
 
 
 def format_inr(value: float) -> str:
-    """Format a number in Indian Cr/L convention."""
+    """Format a number in Crore, always — e.g. -₹0.0032 Cr rather than switching units for small values."""
     sign = "-" if value < 0 else ""
-    value = abs(value)
-    if value >= 1e7:
-        return f"{sign}₹{value / 1e7:,.2f} Cr"
-    if value >= 1e5:
-        return f"{sign}₹{value / 1e5:,.2f} L"
-    return f"{sign}₹{value:,.0f}"
+    cr = abs(value) / 1e7
+    if 0 < cr < 1:
+        return f"{sign}₹{cr:,.4f} Cr"
+    return f"{sign}₹{cr:,.2f} Cr"
 
 
 def money_item(label: str, raw_value: float, headline: bool = False) -> dict:

@@ -46,8 +46,24 @@ weighted_disc = (
     else 0
 )
 
+# Gross/Net Value: COGS = Billing Quantity x Average cost (per-material weighted average cost,
+# joined by Material Code; unmatched materials contribute COGS = 0)
+basic_sum = filtered["BASIC VALUE"].sum()
+taxable_sum = filtered["TAXABLE VALUE"].sum()
+cogs_sum = filtered["COGS"].sum()
+
+gross_value = basic_sum - cogs_sum
+gross_pct = (gross_value / basic_sum * 100) if basic_sum else 0
+
+net_value = taxable_sum - cogs_sum
+net_pct = (net_value / taxable_sum * 100) if taxable_sum else 0
+
 kpi_items = [
     money_item(OVERVIEW_HEADLINE, filtered[headline_col].sum(), headline=True),
+    money_item("Gross Value", gross_value),
+    {"label": "Gross %", "value": f"{gross_pct:,.1f}%", "negative": gross_pct < 0},
+    money_item("Net Value", net_value),
+    {"label": "Net %", "value": f"{net_pct:,.1f}%", "negative": net_pct < 0},
     money_item("Taxable Value", filtered[OVERVIEW_MEASURES["Taxable Value"]].sum()),
     money_item("Value Before Cash Discount", filtered[OVERVIEW_MEASURES["Value Before Cash Discount"]].sum()),
     money_item("MRP Total", filtered[OVERVIEW_MEASURES["MRP Total"]].sum()),
@@ -65,16 +81,17 @@ st.divider()
 
 # --- monthly trend ---
 
-st.subheader(f"{OVERVIEW_HEADLINE} by Month")
+st.subheader(f"{OVERVIEW_HEADLINE} by Month (₹ Cr)")
 monthly = (
     filtered.groupby("Month", as_index=False)[headline_col]
     .sum()
     .sort_values("Month")
 )
 monthly["Month Label"] = monthly["Month"].dt.strftime("%b %Y")
-fig_trend = px.bar(monthly, x="Month Label", y=headline_col, text_auto=".2s")
+monthly[headline_col] = monthly[headline_col] / 1e7
+fig_trend = px.bar(monthly, x="Month Label", y=headline_col, text_auto=".2f")
 fig_trend.update_traces(marker_color=BLUE)
-style_fig(fig_trend, xaxis_title="", yaxis_title=OVERVIEW_HEADLINE, showlegend=False)
+style_fig(fig_trend, xaxis_title="", yaxis_title=f"{OVERVIEW_HEADLINE} (₹ Cr)", showlegend=False)
 st.plotly_chart(fig_trend, use_container_width=True)
 
 st.divider()
@@ -91,19 +108,30 @@ top_n = c3.number_input("Top N", min_value=5, max_value=100, value=15, step=5)
 
 group_col = OVERVIEW_ALL_FILTERS[group_label]
 measure_col = OVERVIEW_MEASURES[measure_label]
+is_money = measure_label != "Billing Quantity"
 
 summary = filtered.groupby(group_col, as_index=False)[list(OVERVIEW_MEASURES.values())].sum()
 summary = summary.sort_values(measure_col, ascending=False)
 
-chart_df = summary.head(int(top_n)).sort_values(measure_col)
+axis_label = f"{measure_label} (₹ Cr)" if is_money else measure_label
+chart_df = summary.head(int(top_n)).sort_values(measure_col).copy()
+if is_money:
+    chart_df[measure_col] = chart_df[measure_col] / 1e7
 bar_colors = [RED if v < 0 else BLUE for v in chart_df[measure_col]]
-fig_bar = px.bar(chart_df, x=measure_col, y=group_col, orientation="h", text_auto=".2s")
+fig_bar = px.bar(chart_df, x=measure_col, y=group_col, orientation="h", text_auto=".2f" if is_money else ".2s")
 fig_bar.update_traces(marker_color=bar_colors)
-style_fig(fig_bar, yaxis_title="", xaxis_title=measure_label, height=max(350, 28 * len(chart_df)))
+style_fig(fig_bar, yaxis_title="", xaxis_title=axis_label, height=max(350, 28 * len(chart_df)))
 st.plotly_chart(fig_bar, use_container_width=True)
 
-display_rename = {group_col: group_label, **{c: m for m, c in OVERVIEW_MEASURES.items()}}
-display_table = summary.rename(columns=display_rename)
+cr_table = summary.copy()
+rename_map = {group_col: group_label}
+for label, col in OVERVIEW_MEASURES.items():
+    if label == "Billing Quantity":
+        rename_map[col] = label
+    else:
+        cr_table[col] = (cr_table[col] / 1e7).round(4)
+        rename_map[col] = f"{label} (₹ Cr)"
+display_table = cr_table.rename(columns=rename_map)
 
 st.dataframe(display_table, use_container_width=True, hide_index=True)
 st.download_button(
